@@ -1,0 +1,5 @@
+# walreader extension
+comment = 'functions for reading wal'
+default_version = '1.0'
+module_pathname = '$libdir/walreader'
+relocatable = true

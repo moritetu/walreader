@@ -31,8 +31,15 @@
 PG_MODULE_MAGIC;
 
 
-/* GUC variables */
+/*
+ * GUC variables
+ */
+
+/* Default wal directory */
 static char *walreader_default_wal_directory = NULL;
+/* Limit record num to read */
+static int walreader_read_limit;
+
 
 /*
  * Private data passed to XLogReaderState.
@@ -84,6 +91,9 @@ typedef struct WalReaderContext
 	/* Private context passed to XLogReaderState */
 	WalReaderPrivate *private;
 
+	/* Number of records read */
+	uint32			 readnum;
+
 } WalReaderContext;
 
 /* Wal segment size */
@@ -112,7 +122,10 @@ extern TimeLineID ThisTimeLineID;
 	psprintf("%X/%08X", (uint32) (recptr >> 32), (uint32) recptr)
 
 /* Indicate file descriptor is invalid */
-#define InvalidFileHandle  -1
+#define InvalidFileHandle          -1
+
+/* Code returned when an error occured in XLogReaderState */
+#define XLogReaderReadPageError    -1
 
 /*
  * This function sets the start byte position and the end byte position
@@ -183,6 +196,18 @@ _PG_init(void)
 							   PGC_USERSET,
 							   0,
 							   NULL, NULL, NULL);
+
+	DefineCustomIntVariable("walreader.read_limit",
+							"Maximum number of reading wal",
+							NULL,
+							&walreader_read_limit,
+							0,
+							0,
+							INT_MAX,
+							PGC_USERSET,
+							0,
+							NULL, NULL, NULL);
+
 }
 
 /*
@@ -341,6 +366,7 @@ ready_for_wal_read(PG_FUNCTION_ARGS, setup_walreader setup_func)
 	mycxt = palloc(sizeof(WalReaderContext));
 	mycxt->xlogreader_state = xlogreader_state; 
 	mycxt->private = private;
+	mycxt->readnum = 0;
 
 	/*
 	 * Construct tuple descriptor.
@@ -496,6 +522,13 @@ static HeapTuple read_xlog_records(FuncCallContext *funcctx)
 	mycxt = funcctx->user_fctx;
 	private = mycxt->private;
 
+
+	/*
+	 * Over limit, so we donot read wad record anymore.
+	 */
+	if (walreader_read_limit > 0 && mycxt->readnum >= walreader_read_limit)
+		goto stop_reading;
+
 	/*
 	 * When we continue reading xlog records in the same segment file,
 	 * nextptr will points to InvalidXLogRecPtr.
@@ -543,6 +576,9 @@ static HeapTuple read_xlog_records(FuncCallContext *funcctx)
 		/* After reading the first record, continue at next one */
 		private->nextptr = InvalidXLogRecPtr;
 
+		/* Count up number of records read */
+		mycxt->readnum++;
+
 		/*
 		 * OK, found a record!
 		 * Make a tuple.
@@ -552,6 +588,8 @@ static HeapTuple read_xlog_records(FuncCallContext *funcctx)
 		return tuple;
 	}
 
+stop_reading:
+
 	/*
 	 * Close the opened segment file if any.
 	 */
@@ -559,7 +597,6 @@ static HeapTuple read_xlog_records(FuncCallContext *funcctx)
 		close(private->curseg_file);
 
 	XLogReaderFree(mycxt->xlogreader_state);
-	MemoryContextSwitchTo(oldcontext);
 
 	/* Done. */
 	return NULL;
@@ -739,7 +776,7 @@ WalReaderReadPage(XLogReaderState *state, XLogRecPtr targetPagePtr, int reqLen,
 			/*
 			 * Returning -1, XlogReader wll stop to read.
 			 */
-			return -1;
+			return XLogReaderReadPageError;
 		}
 	}
 
@@ -801,7 +838,7 @@ WalReaderReadPage(XLogReaderState *state, XLogRecPtr targetPagePtr, int reqLen,
 					(errcode_for_file_access(),
 					 errmsg("could not read file \"%s\": %m", filename)));
 
-			return -1;
+			return XLogReaderReadPageError;
 		}
 
 		/*
@@ -900,7 +937,7 @@ WalReaderXLogRead(WalReaderPrivate *private, XLogSegNo segno, uint32 segoff,
 
 handle_error:
 
-	return -1;
+	return XLogReaderReadPageError;
 }
 
 /*
@@ -932,7 +969,7 @@ WalReaderRecordLen(XLogReaderState *record, uint32 *rec_len, uint32 *fpi_len)
 static int
 open_file_in_directory(const char *directory, const char *fname)
 {
-	int		fd = -1;
+	int		fd = InvalidFileHandle;
 	char	fpath[MAXPGPATH];
 
 	Assert(directory != NULL && fname != NULL);
@@ -943,8 +980,7 @@ open_file_in_directory(const char *directory, const char *fname)
 	if (fd < 0 && errno != ENOENT)
 		ereport(ERROR,
 				(errcode_for_file_access(),
-				 errmsg("could not open file \"%s\": %m",
-						directory)));
+				 errmsg("could not open file \"%s\": %m", directory)));
 
 	return fd;
 }
@@ -956,6 +992,7 @@ open_file_in_directory(const char *directory, const char *fname)
 static bool verify_directory(const char *directory)
 {
 	DIR *dir;
+
 	if ((dir = AllocateDir(directory)) == NULL)
 		return false;
 

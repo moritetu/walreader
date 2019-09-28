@@ -265,10 +265,10 @@ read_wal_segment(PG_FUNCTION_ARGS)
 Datum
 read_wal_lsn(PG_FUNCTION_ARGS)
 {
-	FuncCallContext *funcctx;
-	Datum			 result;
-	WalReaderContext *mycxt;
-	WalReaderPrivate *private;
+	FuncCallContext		*funcctx;
+	Datum				result;
+	WalReaderContext	*mycxt;
+	WalReaderPrivate	*private;
 
 	/*
 	 * Setup walreader and function context.
@@ -508,14 +508,14 @@ ready_for_reading_wal_lsn(WalReaderPrivate *private,
  */
 static HeapTuple read_xlog_records(FuncCallContext *funcctx)
 {
-	XLogReaderState  *xlogreader_state;
-	WalReaderContext *mycxt;
-	WalReaderPrivate *private;
-	XLogRecord		 *record;
-	XLogRecPtr		 first_record;
-	HeapTuple		 tuple;
-	char			 *errormsg;
-	MemoryContext	 oldcontext;
+	XLogReaderState		*xlogreader_state;
+	WalReaderContext	*mycxt;
+	WalReaderPrivate	*private;
+	XLogRecord			*record;
+	XLogRecPtr			first_record;
+	HeapTuple			tuple;
+	char				*errormsg;
+	MemoryContext		oldcontext;
 
 	Assert(funcctx->user_fctx != NULL);
 
@@ -608,20 +608,20 @@ stop_reading:
 static HeapTuple
 make_tuple_xlog_record(FuncCallContext *funcctx)
 {
-	AttInMetadata	 *attinmeta;
-	const char 		 *id;
-	const RmgrData	 *desc;
-	uint32			 rec_len;
-	uint32			 fpi_len;
-	uint8			 info;
-	XLogRecPtr		 xl_prev;
-	XLogReaderState  *xlogreader_state;
-	WalReaderContext *mycxt;
-	WalReaderPrivate *private;
-	HeapTuple		 tuple;
-	char			 filename[MAXPGPATH];
-	char			 *values[MAX_ATTRS_NUM];
-	int				 colno;
+	AttInMetadata		*attinmeta;
+	const char 			*id;
+	const RmgrData		*desc;
+	uint32				rec_len;
+	uint32				fpi_len;
+	uint8				info;
+	XLogRecPtr			xl_prev;
+	XLogReaderState		*xlogreader_state;
+	WalReaderContext	*mycxt;
+	WalReaderPrivate	*private;
+	HeapTuple			tuple;
+	char				filename[MAXPGPATH];
+	char				*values[MAX_ATTRS_NUM];
+	int					colno;
 
 	Assert(funcctx->user_fctx != NULL);
 
@@ -856,8 +856,7 @@ WalReaderReadPage(XLogReaderState *state, XLogRecPtr targetPagePtr, int reqLen,
 }
 
 /*
- * Read data 
- *
+ * Read wal data.
  */
 static int
 WalReaderXLogRead(WalReaderPrivate *private, XLogSegNo segno, uint32 segoff,

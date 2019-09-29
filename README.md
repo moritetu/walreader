@@ -37,9 +37,9 @@ postgres=# set walreader.default_wal_directory to '/path/to/waldir';
 
 ### walreader.read_limit
 
-Maximum number of reading wal. Default is `0` and it means no limit.
+Maximum number of records to read. Default is `0` and it means no limit.
 
-You can specify in the range of 0 to `INT_MAX`.
+You can specify in the range of `0` to `INT_MAX`.
 
  
 Usage
@@ -77,6 +77,7 @@ WARNING:  invalid record length at 0/135D60E0: wanted 24, got 0
 ----------+--------------------------+---------+------+----------+---------+---------+---------+----+------------+------------+---------------+---------------------------------------------------------
         1 | 000000010000000000000013 |      40 |    1 |       40 | Standby |      50 |      50 |  0 | 0/13000028 | 0/12488EA0 | RUNNING_XACTS | nextXid 537 latestCompletedXid 536 oldestRunningXid 537
 (1 row)
+
 ```
  
 ### Read wal records with lsn
@@ -89,7 +90,7 @@ read_wal_lsn(start_wal_lsn [, end_wal_lsn [, wal_directory]]);
 
 **Example**
 
-```
+```sql
  postgres=# select * from read_wal_lsn('0/04000208');
  timeline |          walseg          | seg_off | page | page_off |  rmgr   | rec_len | tot_len | tx |    lsn     |  prev_lsn  |      identify       |                                                                                                   rmgr_desc                                                                                                   
 ----------+--------------------------+---------+------+----------+---------+---------+---------+----+------------+------------+---------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -98,6 +99,5 @@ read_wal_lsn(start_wal_lsn [, end_wal_lsn [, wal_directory]]);
         1 | 000000010000000000000004 |     696 |    1 |      696 | Standby |      50 |      50 |  0 | 0/040002B8 | 0/04000240 | RUNNING_XACTS       | nextXid 489 latestCompletedXid 488 oldestRunningXid 489
         1 | 000000010000000000000004 |     752 |    1 |      752 | XLOG    |      24 |      24 |  0 | 0/040002F0 | 0/040002B8 | SWITCH              | 
 (4 rows)
-
 
 ```

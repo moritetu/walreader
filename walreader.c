@@ -660,7 +660,7 @@ make_tuple_xlog_record(FuncCallContext *funcctx)
 	values[colno++] = psprintf("%u", startoff);
 
 	/* page in the segment */
-	values[colno++] = psprintf("%u", (xlogreader_state->readOff / XLOG_BLCKSZ) + 1);
+	values[colno++] = psprintf("%u", (startoff / XLOG_BLCKSZ) + 1);
 
 	/* page offset */
 	values[colno++] = psprintf("%u", (int)(xlogreader_state->ReadRecPtr % XLOG_BLCKSZ));

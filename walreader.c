@@ -24,6 +24,7 @@
 #include "utils/tuplestore.h"
 #include "utils/builtins.h"
 #include "utils/guc.h"
+#include "utils/pg_lsn.h"
 #include "lib/stringinfo.h"
 #include "storage/fd.h"
 
@@ -36,9 +37,9 @@ PG_MODULE_MAGIC;
  */
 
 /* Default wal directory */
-static char *walreader_default_wal_directory = NULL;
+static char	   *walreader_default_wal_directory = NULL;
 /* Limit record num to read */
-static int walreader_read_limit;
+static int 		walreader_read_limit;
 
 
 /*
@@ -77,7 +78,7 @@ typedef struct WalReaderPrivate
 	bool		endptr_reached;
 
 	/* The directory where we read wal */
-	char		*waldir;
+	char	   *waldir;
 
 } WalReaderPrivate;
 
@@ -86,13 +87,13 @@ typedef struct WalReaderPrivate
  */
 typedef struct WalReaderContext
 {
-	XLogReaderState  *xlogreader_state;
+	XLogReaderState	   *xlogreader_state;
 
 	/* Private context passed to XLogReaderState */
-	WalReaderPrivate *private;
+	WalReaderPrivate   *private;
 
 	/* Number of records read */
-	uint32			 readnum;
+	uint32				readnum;
 
 } WalReaderContext;
 
@@ -116,7 +117,7 @@ extern TimeLineID ThisTimeLineID;
 	} while (0)
 
 /* Number of column which walreader returns */
-#define MAX_ATTRS_NUM      13
+#define MAX_ATTRS_NUM      15
 
 #define RecPtrToLSN(recptr) \
 	psprintf("%X/%08X", (uint32) (recptr >> 32), (uint32) recptr)
@@ -228,10 +229,10 @@ _PG_fini(void)
 Datum
 read_wal_segment(PG_FUNCTION_ARGS)
 {
-	FuncCallContext *funcctx;
-	Datum			 result;
-	WalReaderContext *mycxt;
-	WalReaderPrivate *private;
+	FuncCallContext	   *funcctx;
+	Datum				result;
+	WalReaderContext   *mycxt;
+	WalReaderPrivate   *private;
 	/*
 	 * Setup walreader and function context.
 	 */
@@ -265,10 +266,10 @@ read_wal_segment(PG_FUNCTION_ARGS)
 Datum
 read_wal_lsn(PG_FUNCTION_ARGS)
 {
-	FuncCallContext		*funcctx;
+	FuncCallContext	   *funcctx;
 	Datum				result;
-	WalReaderContext	*mycxt;
-	WalReaderPrivate	*private;
+	WalReaderContext   *mycxt;
+	WalReaderPrivate   *private;
 
 	/*
 	 * Setup walreader and function context.
@@ -305,16 +306,15 @@ read_wal_lsn(PG_FUNCTION_ARGS)
 static void
 ready_for_wal_read(PG_FUNCTION_ARGS, setup_walreader setup_func)
 {
-	FuncCallContext 	*funcctx;
+	FuncCallContext	   *funcctx;
 	MemoryContext		oldcontext;
-	AttInMetadata 		*attinmeta;
 	TupleDesc			tupdesc;
-	WalReaderPrivate	*private;
-	WalReaderContext	*mycxt;
-	XLogReaderState		*xlogreader_state;
-	char				*start_wal = NULL;
-	char				*end_wal = NULL;
-	char				*waldir = NULL;
+	WalReaderPrivate   *private;
+	WalReaderContext   *mycxt;
+	XLogReaderState	   *xlogreader_state;
+	char			   *start_wal = NULL;
+	char			   *end_wal = NULL;
+	char			   *waldir = NULL;
 
 	int argn = PG_NARGS();
 	int i = 0;
@@ -374,8 +374,7 @@ ready_for_wal_read(PG_FUNCTION_ARGS, setup_walreader setup_func)
 	tupdesc = walreader_tupdesc();
 
 	funcctx->user_fctx = mycxt;
-	attinmeta = TupleDescGetAttInMetadata(tupdesc);
-	funcctx->attinmeta = attinmeta;
+	funcctx->tuple_desc = tupdesc;
 
 	MemoryContextSwitchTo(oldcontext);
 }
@@ -508,13 +507,13 @@ ready_for_reading_wal_lsn(WalReaderPrivate *private,
  */
 static HeapTuple read_xlog_records(FuncCallContext *funcctx)
 {
-	XLogReaderState		*xlogreader_state;
-	WalReaderContext	*mycxt;
-	WalReaderPrivate	*private;
-	XLogRecord			*record;
+	XLogReaderState	   *xlogreader_state;
+	WalReaderContext   *mycxt;
+	WalReaderPrivate   *private;
+	XLogRecord		   *record;
 	XLogRecPtr			first_record;
 	HeapTuple			tuple;
-	char				*errormsg;
+	char			   *errormsg;
 	MemoryContext		oldcontext;
 
 	Assert(funcctx->user_fctx != NULL);
@@ -608,25 +607,24 @@ stop_reading:
 static HeapTuple
 make_tuple_xlog_record(FuncCallContext *funcctx)
 {
-	AttInMetadata		*attinmeta;
-	const char 			*id;
-	const RmgrData		*desc;
+	const char 		   *id;
+	const RmgrData	   *desc;
 	uint32				rec_len;
 	uint32				fpi_len;
 	uint8				info;
 	XLogRecPtr			xl_prev;
-	XLogReaderState		*xlogreader_state;
-	WalReaderContext	*mycxt;
-	WalReaderPrivate	*private;
+	XLogReaderState	   *xlogreader_state;
+	WalReaderContext   *mycxt;
+	WalReaderPrivate   *private;
 	HeapTuple			tuple;
 	char				filename[MAXPGPATH];
-	char				*values[MAX_ATTRS_NUM];
 	int					colno;
+	Datum				values[MAX_ATTRS_NUM];
+	bool				nulls[MAX_ATTRS_NUM];
 
 	Assert(funcctx->user_fctx != NULL);
 
 	mycxt = funcctx->user_fctx;
-	attinmeta = funcctx->attinmeta;
 
 	xlogreader_state = mycxt->xlogreader_state;
 	private = mycxt->private;
@@ -648,52 +646,93 @@ make_tuple_xlog_record(FuncCallContext *funcctx)
 	colno = 0;
 
 	/* Timeline ID */
-	values[colno++] = psprintf("%u", private->timeline_id);
+	values[colno] = UInt32GetDatum(private->timeline_id);
+	nulls[colno] = false;
+	colno++;
 
 	/* Wal segment file */
 	XLogFileName(filename, private->timeline_id, xlogreader_state->readSegNo,
 				 wal_segment_size);
-	values[colno++] = pstrdup(filename);
+	values[colno] = CStringGetTextDatum(filename);
+	nulls[colno] = false;
+	colno++;
 
 	/* segment offset */
 	uint32 startoff = XLogSegmentOffset(xlogreader_state->ReadRecPtr, wal_segment_size);
-	values[colno++] = psprintf("%u", startoff);
+	values[colno] = UInt32GetDatum(startoff);
+	nulls[colno] = false;
+	colno++;
 
 	/* page in the segment */
-	values[colno++] = psprintf("%u", (startoff / XLOG_BLCKSZ) + 1);
+	values[colno] = UInt32GetDatum(((startoff / XLOG_BLCKSZ) + 1));
+	nulls[colno] = false;
+	colno++;
 
 	/* page offset */
-	values[colno++] = psprintf("%u", (int)(xlogreader_state->ReadRecPtr % XLOG_BLCKSZ));
+	values[colno] = UInt32GetDatum(((int)(xlogreader_state->ReadRecPtr % XLOG_BLCKSZ)));
+	nulls[colno] = false;
+	colno++;
 
 	/* rmgr name */
-	values[colno++] = pstrdup(desc->rm_name);
+	values[colno] = CStringGetTextDatum(desc->rm_name);
+	nulls[colno] = false;
+	colno++;
 
 	/* rec_len */
-	values[colno++] = psprintf("%u", rec_len);
+	values[colno] = UInt32GetDatum(rec_len);
+	nulls[colno] = false;
+	colno++;
 
 	/* tot_len */
-	values[colno++] = psprintf("%u", XLogRecGetTotalLen(xlogreader_state));
+	values[colno] = UInt32GetDatum(XLogRecGetTotalLen(xlogreader_state));
+	nulls[colno] = false;
+	colno++;
+
+	/* tot_rlen (real length with padding size)  */
+	values[colno] = UInt32GetDatum(MAXALIGN(XLogRecGetTotalLen(xlogreader_state)));
+	nulls[colno] = false;
+	colno++;
 
 	/* txid */
-	values[colno++] = psprintf("%u", XLogRecGetXid(xlogreader_state));
+	values[colno] = TransactionIdGetDatum(XLogRecGetXid(xlogreader_state));
+	nulls[colno] = false;
+	colno++;
 
 	/* lsn */
-	values[colno++] = RecPtrToLSN(xlogreader_state->ReadRecPtr);
+	values[colno] = LSNGetDatum(xlogreader_state->ReadRecPtr);
+	nulls[colno] = false;
+	colno++;
+
+	/*
+	 * end_lsn
+	 * EndRecPtr points to record end + 1.
+	 */
+	uint64 end_lsn = xlogreader_state->EndRecPtr - 1;
+	values[colno] = LSNGetDatum(end_lsn);
+	nulls[colno] = false;
+	colno++;
 
 	/* prev_lsn */
-	values[colno++] = RecPtrToLSN(xl_prev);
+	values[colno] = LSNGetDatum(xl_prev);
+	nulls[colno] = false;
+	colno++;
 
 	/* identify */
-	values[colno++] = pstrdup(id);
+	values[colno] = CStringGetTextDatum(id);
+	nulls[colno] = false;
+	colno++;
 
 	/* rmgr desc */
 	StringInfoData buf;
 	initStringInfo(&buf);
 	desc->rm_desc(&buf, xlogreader_state);
-	values[colno++] = pstrdup(buf.data);
+	values[colno] = CStringGetTextDatum(buf.data);
+	nulls[colno] = false;
+	colno++;
+
 	pfree(buf.data);
 
-	tuple = BuildTupleFromCStrings(attinmeta, values);
+	tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
 
 	return tuple;
 }
@@ -723,15 +762,19 @@ walreader_tupdesc()
 	TupleDescInitEntry(tupdesc, (AttrNumber) ++attr_num, "rmgr",
 					   TEXTOID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) ++attr_num, "rec_len",
-					   INT4OID, -1, 0);
+					   INT8OID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) ++attr_num, "tot_len",
-					   INT4OID, -1, 0);
+					   INT8OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) ++attr_num, "tot_rlen",
+					   INT8OID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) ++attr_num, "tx",
 					   XIDOID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) ++attr_num, "lsn",
-					   TEXTOID, -1, 0);
+					   LSNOID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) ++attr_num, "end_lsn",
+					   LSNOID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) ++attr_num, "prev_lsn",
-					   TEXTOID, -1, 0);
+					   LSNOID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) ++attr_num, "identify",
 					   TEXTOID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) ++attr_num, "rmgr_desc",
@@ -862,7 +905,7 @@ static int
 WalReaderXLogRead(WalReaderPrivate *private, XLogSegNo segno, uint32 segoff,
 				  char *readBuf, int count)
 {
-	char	*bufpos;
+	char   *bufpos;
 	int		leftbytes;
 
 	bufpos = readBuf;

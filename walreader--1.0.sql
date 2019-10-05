@@ -11,11 +11,13 @@ CREATE TYPE waldata AS
 	page      INT4,
 	page_off  INT4,
 	rmgr      TEXT,
-	rec_len   INT4,
-	tot_len   INT4,
+	rec_len   INT8,
+	tot_len   INT8,
+	tot_rlen  INT8,
 	tx        XID,
-	lsn       TEXT,
-	prev_lsn  TEXT,
+	lsn       PG_LSN,
+	end_lsn   PG_LSN,
+	prev_lsn  PG_LSN,
 	identify  TEXT,
 	rmgr_desc TEXT
 );

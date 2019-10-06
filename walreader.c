@@ -169,6 +169,7 @@ static void ready_for_reading_wal_lsn(WalReaderPrivate *private,
 										  char *walseg_directory);
 static HeapTuple read_xlog_records(FuncCallContext *funcctx);
 static HeapTuple make_tuple_xlog_record(FuncCallContext *funcctx);
+static XLogRecPtr skip_if_contblock(XLogReaderState *record);
 
 static TupleDesc walreader_tupdesc();
 
@@ -520,7 +521,7 @@ static HeapTuple read_xlog_records(FuncCallContext *funcctx)
 	XLogRecPtr			first_record;
 	HeapTuple			tuple;
 	char			   *errormsg;
-	MemoryContext		oldcontext;
+	MemoryContext		oldcontext = NULL;
 
 	Assert(funcctx->user_fctx != NULL);
 
@@ -566,17 +567,31 @@ static HeapTuple read_xlog_records(FuncCallContext *funcctx)
 		/* Try to read the next record */
 		record = XLogReadRecord(xlogreader_state, first_record, &errormsg);
 
-		MemoryContextSwitchTo(oldcontext);
-
 		if (!record)
 		{
+			XLogRecPtr recptr;
+
 			if (errormsg)
 				elog(WARNING, "%s", errormsg);
 
-			private->endptr_reached = true;
+			/*
+			 * Starting point may be contblock.
+			 */
+			if (mycxt->readnum == 0)
+			{
+				recptr = skip_if_contblock(xlogreader_state);
+				if (recptr != InvalidXLogRecPtr)
+				{
+					first_record = recptr;
+					continue;
+				}
+			}
 
+			private->endptr_reached = true;
 			break;
 		}
+
+		MemoryContextSwitchTo(oldcontext);
 
 		/* After reading the first record, continue at next one */
 		private->nextptr = InvalidXLogRecPtr;
@@ -595,6 +610,9 @@ static HeapTuple read_xlog_records(FuncCallContext *funcctx)
 
 stop_reading:
 
+	if (oldcontext != NULL)
+		MemoryContextSwitchTo(oldcontext);
+
 	/*
 	 * Close the opened segment file if any.
 	 */
@@ -605,6 +623,39 @@ stop_reading:
 
 	/* Done. */
 	return NULL;
+}
+
+/*
+ * Skip if we have read contblock.
+ */
+static XLogRecPtr skip_if_contblock(XLogReaderState *record)
+{
+	uint32			pageHeaderSize;
+	XLogPageHeader	header = (XLogPageHeader) record->readBuf;
+	XLogRecPtr 		curptr = record->currRecPtr;
+	XLogRecPtr		tmpRecPtr;
+	XLogRecPtr		targetPagePtr;
+	int				targetRecOff;
+
+	pageHeaderSize = XLogPageHeaderSize(header);
+
+	targetRecOff = curptr % XLOG_BLCKSZ;
+	targetPagePtr = curptr - targetRecOff;
+
+	if (header->xlp_info & XLP_FIRST_IS_CONTRECORD)
+	{
+		if (MAXALIGN(header->xlp_rem_len) > (XLOG_BLCKSZ - pageHeaderSize))
+			tmpRecPtr = targetPagePtr + XLOG_BLCKSZ;
+		else
+		{
+			tmpRecPtr = targetPagePtr + pageHeaderSize
+				+ MAXALIGN(header->xlp_rem_len);
+		}
+
+		return tmpRecPtr;
+	}
+
+	return InvalidXLogRecPtr;
 }
 
 /*
@@ -830,21 +881,17 @@ WalReaderReadPage(XLogReaderState *state, XLogRecPtr targetPagePtr, int reqLen,
 
 	/* Segment number to read next */
 	XLByteToSeg(targetPagePtr, segno, wal_segment_size);
+	private->curptr = targetPagePtr;
 
 	/*
 	 * Need to switch a new segment file?
 	 */
 	if (private->curseg_file < 0 ||
-		!XLByteInSeg(private->curptr, segno, wal_segment_size))
+		!XLByteInSeg(private->curptr, state->readSegNo, wal_segment_size))
 	{
 		char	filename[MAXFNAMELEN];
 		int		tries;
 		int		segfile;
-
-		/*
-		 * Set curptr to the head of the page.
-		 */
-		private->curptr = targetPagePtr;
 
 		/* Switch to another logfile segment */
 		if (private->curseg_file >= 0)
@@ -854,10 +901,10 @@ WalReaderReadPage(XLogReaderState *state, XLogRecPtr targetPagePtr, int reqLen,
 
 			/*
 			 * nextptr needs to be initialized per segment file.
-			 * Now segment file has been switched, we point nextptr to curptr.
-			 * curptr should be pointed to the beginning of the segment file.
+			 * Now segment file has been switched, we point nextptr to the head of
+			 * next record.
 			 */
-			private->nextptr = private->curptr;
+			private->nextptr = targetPtr;
 		}
 
 		/*

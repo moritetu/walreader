@@ -70,6 +70,11 @@ typedef struct WalReaderPrivate
 	XLogRecPtr	nextptr;
 
 	/*
+	 * Offset in reading segment file.
+	 */
+	uint32		segoff;
+
+	/*
 	 * File descriptor of current reading segment file.
 	 */
 	int			curseg_file;
@@ -111,6 +116,7 @@ extern TimeLineID ThisTimeLineID;
 		private->timeline_id = 1; \
 		private->curptr = InvalidXLogRecPtr; \
 		private->nextptr = InvalidXLogRecPtr; \
+		private->segoff = 0; \
 		private->curseg_file = -1; \
 		private->endptr_reached = false; \
 		private->waldir = walreader_default_wal_directory; \
@@ -170,7 +176,7 @@ static int WalReaderReadPage(XLogReaderState *state, XLogRecPtr targetPagePtr,
 							 int reqLen, XLogRecPtr targetPtr, char *readBuf,
 							 TimeLineID *curFileTLI);
 static int WalReaderXLogRead(WalReaderPrivate *private, XLogSegNo segno,
-							 uint32 segoffm, char *readBuf, int count);
+							 char *readBuf, int count);
 static void WalReaderRecordLen(XLogReaderState *record, uint32 *rec_len, uint32 *fpi_len);
 
 
@@ -350,7 +356,7 @@ ready_for_wal_read(PG_FUNCTION_ARGS, setup_walreader setup_func)
 	* Ready for reading wal records with the specified arguments.
 	*/
 	setup_func(private, start_wal, end_wal, waldir);
-	private->curptr = private->nextptr = private->startptr;
+	private->nextptr = private->startptr;
 
 	xlogreader_state = XLogReaderAllocate(wal_segment_size, WalReaderReadPage,
 										  private);
@@ -797,8 +803,7 @@ WalReaderReadPage(XLogReaderState *state, XLogRecPtr targetPagePtr, int reqLen,
 #define XLOG_OPEN_WAIT_MSEC       500 * 1000
 
 	/* The reading segment number */
-	XLogSegNo	segno  = state->readSegNo;
-	uint32		segoff = state->readOff;
+	XLogSegNo		segno;
 
 	WalReaderPrivate *private = state->private_data;
 	int count = XLOG_BLCKSZ;
@@ -823,8 +828,8 @@ WalReaderReadPage(XLogReaderState *state, XLogRecPtr targetPagePtr, int reqLen,
 		}
 	}
 
-	if (segoff == 0)
-		private->curptr = targetPagePtr;
+	/* Segment number to read next */
+	XLByteToSeg(targetPagePtr, segno, wal_segment_size);
 
 	/*
 	 * Need to switch a new segment file?
@@ -835,6 +840,11 @@ WalReaderReadPage(XLogReaderState *state, XLogRecPtr targetPagePtr, int reqLen,
 		char	filename[MAXFNAMELEN];
 		int		tries;
 		int		segfile;
+
+		/*
+		 * Set curptr to the head of the page.
+		 */
+		private->curptr = targetPagePtr;
 
 		/* Switch to another logfile segment */
 		if (private->curseg_file >= 0)
@@ -853,7 +863,6 @@ WalReaderReadPage(XLogReaderState *state, XLogRecPtr targetPagePtr, int reqLen,
 		/*
 		 * Get the name of the wal file to open.
 		 */
-		XLByteToSeg(private->curptr, segno, wal_segment_size);
 		XLogFileName(filename, private->timeline_id, segno, wal_segment_size);
 
 		/*
@@ -888,12 +897,13 @@ WalReaderReadPage(XLogReaderState *state, XLogRecPtr targetPagePtr, int reqLen,
 		 * Set next segment file to read.
 		 */
 		private->curseg_file = segfile;
+		private->segoff = 0;
 	}
 
 	/*
 	 * Read count bytes of data from the position of the target page.
 	 */
-	readbyte = WalReaderXLogRead(private, segno, segoff, readBuf, count);
+	readbyte = WalReaderXLogRead(private, segno, readBuf, count);
 
 	return readbyte;
 }
@@ -902,11 +912,11 @@ WalReaderReadPage(XLogReaderState *state, XLogRecPtr targetPagePtr, int reqLen,
  * Read wal data.
  */
 static int
-WalReaderXLogRead(WalReaderPrivate *private, XLogSegNo segno, uint32 segoff,
+WalReaderXLogRead(WalReaderPrivate *private, XLogSegNo segno,
 				  char *readBuf, int count)
 {
-	char   *bufpos;
-	int		leftbytes;
+	char	   *bufpos;
+	int			leftbytes;
 
 	bufpos = readBuf;
 	leftbytes = count;
@@ -921,7 +931,7 @@ WalReaderXLogRead(WalReaderPrivate *private, XLogSegNo segno, uint32 segoff,
 		startoff = XLogSegmentOffset(private->curptr, wal_segment_size);
 
 		/* Need to seek in the file? */
-		if (segoff != startoff)
+		if (private->segoff != startoff)
 		{
 			if (lseek(segfile, (off_t) startoff, SEEK_SET) < 0)
 			{
@@ -935,6 +945,8 @@ WalReaderXLogRead(WalReaderPrivate *private, XLogSegNo segno, uint32 segoff,
 
 				goto handle_error;
 			}
+
+			private->segoff = startoff;
 		}
 
 		/* How many bytes are within this segment? */
@@ -958,10 +970,10 @@ WalReaderXLogRead(WalReaderPrivate *private, XLogSegNo segno, uint32 segoff,
 
 			if (readbytes < 0)
 				elog(WARNING, "could not read from log file %s, offset %u, length %d: %s",
-							filename, segoff, segbytes, strerror(err));
+							filename, private->segoff, segbytes, strerror(err));
 			else if (readbytes == 0)
 				elog(WARNING, "could not read from log file %s, offset %u: read %d of %zu",
-							filename, segoff, readbytes, (Size) segbytes);
+							filename, private->segoff, readbytes, (Size) segbytes);
 
 			goto handle_error;
 		}
@@ -969,7 +981,7 @@ WalReaderXLogRead(WalReaderPrivate *private, XLogSegNo segno, uint32 segoff,
 		/* Update state for read */
 		private->curptr += readbytes;
 
-		segoff += readbytes;
+		private->segoff += readbytes;
 		bufpos += readbytes;
 		leftbytes -= readbytes;
 	}
